@@ -575,8 +575,78 @@ const DEFAULT_CONFIG = {
 
 /* ====================== MODALES Y FORMULARIOS ====================== */
 let _modalSave=null;
+/* ====================== ADJUNTOS (imágenes y PDF) ====================== */
+/* Guarda en cada modal los archivos seleccionados antes de grabar. */
+var _fileAttach={};
+/* Límite seguro para guardar en Firestore (≈900 KB binarios → ≈1.23M caracteres en dataURL base64). */
+var ADJ_MAX_CHARS=1230000;
+/* Lee un archivo como dataURL (base64). */
+function _readDataURL(file){ return new Promise((res,rej)=>{ const fr=new FileReader(); fr.onload=()=>res(fr.result); fr.onerror=rej; fr.readAsDataURL(file); }); }
+/* Redimensiona y comprime una imagen a JPG. Devuelve un dataURL. */
+function _resizeImage(file, maxDim, quality){
+  return new Promise((resolve,reject)=>{
+    const fr=new FileReader();
+    fr.onload=()=>{ const img=new Image();
+      img.onload=()=>{ let w=img.width, h=img.height;
+        if(w>maxDim||h>maxDim){ const r=Math.min(maxDim/w, maxDim/h); w=Math.round(w*r); h=Math.round(h*r); }
+        const cv=document.createElement('canvas'); cv.width=w; cv.height=h;
+        const ctx=cv.getContext('2d'); ctx.fillStyle='#fff'; ctx.fillRect(0,0,w,h); ctx.drawImage(img,0,0,w,h);
+        resolve(cv.toDataURL('image/jpeg', quality));
+      };
+      img.onerror=reject; img.src=fr.result;
+    };
+    fr.onerror=reject; fr.readAsDataURL(file);
+  });
+}
+/* Procesa el archivo elegido: comprime imágenes, valida PDF, controla tamaño. */
+async function procesarAdjunto(input, key){
+  const file=input.files&&input.files[0]; if(!file) return;
+  const prev=document.getElementById('adj_prev_'+key);
+  if(prev) prev.innerHTML='<span class="muted">Procesando…</span>';
+  try{
+    let data, name=file.name, type;
+    if(/^image\//i.test(file.type)){
+      let q=0.72, dim=1280;
+      data=await _resizeImage(file, dim, q);
+      while(data.length>ADJ_MAX_CHARS && q>0.4){ q-=0.15; data=await _resizeImage(file, dim, q); }
+      while(data.length>ADJ_MAX_CHARS && dim>640){ dim-=320; data=await _resizeImage(file, dim, 0.6); }
+      type='image/jpeg'; if(!/\.jpe?g$/i.test(name)) name=name.replace(/\.[^.]+$/,'')+'.jpg';
+    } else if(file.type==='application/pdf' || /\.pdf$/i.test(file.name)){
+      data=await _readDataURL(file);
+      if(data.length>ADJ_MAX_CHARS){ toast('El PDF es muy pesado para guardar en la nube (máx ≈900 KB). Sube una versión más liviana.',true); input.value=''; if(prev) prev.innerHTML=(key in _fileAttach && _fileAttach[key]?_adjPreviewHTML(_fileAttach[key],key):''); return; }
+      type='application/pdf';
+    } else {
+      toast('Solo se permiten imágenes o archivos PDF',true); input.value=''; if(prev) prev.innerHTML=''; return;
+    }
+    _fileAttach[key]={name, type, data};
+    if(prev) prev.innerHTML=_adjPreviewHTML(_fileAttach[key], key);
+  }catch(e){ console.error('adjunto',e); toast('No se pudo procesar el archivo',true); if(prev) prev.innerHTML=''; }
+}
+/* Quita el adjunto del modal actual. */
+function quitarAdjunto(key){ _fileAttach[key]=null; const prev=document.getElementById('adj_prev_'+key); if(prev) prev.innerHTML=''; const inp=document.getElementById('fld_'+key); if(inp) inp.value=''; }
+/* Vista previa dentro del modal de edición. */
+function _adjPreviewHTML(a, key){
+  if(!a) return '';
+  const peso=Math.round((a.data.length*0.73)/1024);
+  const thumb = a.type==='application/pdf'
+    ? `<span class="badge" style="display:inline-flex;align-items:center;gap:6px">${icon('file',14)} ${esc(a.name||'documento.pdf')}</span>`
+    : `<img src="${a.data}" alt="" style="height:56px;border-radius:6px;border:1px solid var(--line);vertical-align:middle">`;
+  return `<div style="display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap">${thumb}<span class="muted" style="font-size:12px">≈${peso} KB</span><button type="button" class="btn sm danger" onclick="quitarAdjunto('${key}')">${icon('trash',13)} Quitar</button></div>`;
+}
+/* Abre el archivo adjunto de un registro en una ventana para verlo o descargarlo. */
+function verAdjunto(store,id){
+  const r=(App[store]||[]).find(x=>String(x.id)===String(id)); const a=r&&r.adjunto;
+  if(!a||!a.data){ toast('Este registro no tiene archivo adjunto'); return; }
+  let html;
+  if(a.type==='application/pdf'){ html=`<iframe src="${a.data}" style="width:100%;height:68vh;border:1px solid var(--line);border-radius:8px"></iframe>`; }
+  else { html=`<div style="text-align:center"><img src="${a.data}" style="max-width:100%;max-height:68vh;border-radius:8px;border:1px solid var(--line)"></div>`; }
+  html+=`<div style="margin-top:12px"><a class="btn" href="${a.data}" download="${esc(a.name||'archivo')}">${icon('download',14)} Descargar</a></div>`;
+  openInfo(esc(a.name||'Archivo adjunto'), html);
+}
+
 function openModal(title, fields, onSave, values){
   values=values||{};
+  _fileAttach={};
   document.getElementById('modalTitle').textContent=title;
   const body=document.getElementById('modalBody');
   body.innerHTML = fields.map(f=>fieldHTML(f, values[f.key])).join('');
@@ -587,6 +657,7 @@ function openModal(title, fields, onSave, values){
       const el=document.getElementById('fld_'+f.key);
       let v = el? (f.type==='checkbox'? el.checked : el.value) : '';
       if(f.type==='number') v = parseMiles(v);
+      if(f.type==='file') v = (f.key in _fileAttach) ? _fileAttach[f.key] : (values[f.key]||null);
       data[f.key]=v;
       if(f.required && (v===''||v==null)){ if(el) el.style.borderColor='var(--red)'; ok=false; }
       else if(el){ el.style.borderColor=''; }
@@ -619,6 +690,9 @@ function fieldHTML(f,val){
     input=`<textarea id="fld_${f.key}" placeholder="${esc(f.placeholder||'')}">${esc(val)}</textarea>`;
   } else if(f.type==='number'){
     input=`<input id="fld_${f.key}" type="text" inputmode="decimal" value="${esc(milesDisplay(val))}" placeholder="${esc(f.placeholder||'')}" oninput="formatMiles(this)">`;
+  } else if(f.type==='file'){
+    const cur = (val && val.data) ? val : null;
+    input=`<input id="fld_${f.key}" type="file" accept="image/*,application/pdf" onchange="procesarAdjunto(this,'${f.key}')" style="padding:7px"><div class="muted" style="font-size:12px;margin-top:4px">Imágenes se reducen automáticamente. PDF hasta ≈900 KB.</div><div id="adj_prev_${f.key}">${cur?_adjPreviewHTML(cur,f.key):''}</div>`;
   } else {
     input=`<input id="fld_${f.key}" type="${f.type||'text'}" value="${esc(val)}" placeholder="${esc(f.placeholder||'')}">`;
   }
@@ -1455,6 +1529,45 @@ function verSocio(id){
    gastos) vs. lo que le corresponde según el cargo definido en cada costo.
    Neto = Pagó − Le corresponde. Positivo ⇒ puso de más (le deben);
    negativo ⇒ debe esa diferencia al resto. */
+/* Devuelve el conjunto de IDs de socios que ya no existen pero que aún
+   tienen pagos, cargos o abonos asociados (aparecen como "(socio eliminado)"). */
+function sociosEliminadosIds(){
+  const known=new Set(App.socios.map(s=>s.id));
+  const orphan=new Set();
+  App.costos.forEach(c=>{
+    costPagos(c).forEach(p=>{ if(p.socioId && !known.has(p.socioId)) orphan.add(p.socioId); });
+    costCargos(c).forEach(x=>{ if(x.socioId && !known.has(x.socioId)) orphan.add(x.socioId); });
+  });
+  (App.liquidaciones||[]).forEach(l=>{ [l.fromId,l.toId].forEach(id=>{ if(id && !known.has(id)) orphan.add(id); }); });
+  return orphan;
+}
+/* Elimina del proyecto actual todas las referencias a socios borrados:
+   quita sus pagos y cargos en los costos y borra los abonos donde participan.
+   No elimina costos; solo los montos asignados a esos socios inexistentes. */
+async function limpiarSociosEliminados(){
+  const orphan=sociosEliminadosIds();
+  if(!orphan.size){ toast('No hay referencias de socios eliminados'); return; }
+  let nPagos=0,nCargos=0,nAbonos=0;
+  App.costos.forEach(c=>{
+    costPagos(c).forEach(p=>{ if(orphan.has(p.socioId)) nPagos++; });
+    costCargos(c).forEach(x=>{ if(orphan.has(x.socioId)) nCargos++; });
+  });
+  (App.liquidaciones||[]).forEach(l=>{ if(orphan.has(l.fromId)||orphan.has(l.toId)) nAbonos++; });
+  if(!confirm(`Se quitarán las referencias a ${orphan.size} socio(s) eliminado(s):\n· ${nPagos} pago(s) en costos\n· ${nCargos} cargo(s) de reparto\n· ${nAbonos} abono(s) entre socios\n\nEsto NO borra los costos, solo los montos asignados a esos socios. ¿Continuar?`)) return;
+  for(const c of App.costos){
+    let changed=false;
+    if(Array.isArray(c.pagos)){ const n=c.pagos.filter(p=>!orphan.has(p.socioId)); if(n.length!==c.pagos.length){ c.pagos=n; changed=true; } }
+    if(Array.isArray(c.pagadores)){ const n=c.pagadores.filter(p=>!orphan.has(p.socioId)); if(n.length!==c.pagadores.length){ c.pagadores=n; changed=true; } }
+    if(Array.isArray(c.cargos)){ const n=c.cargos.filter(x=>!orphan.has(x.socioId)); if(n.length!==c.cargos.length){ c.cargos=n; changed=true; } }
+    if(changed){ c.estado=estadoDesdePagos(c); await dbPut('costos',c); }
+  }
+  for(const l of (App.liquidaciones||[]).slice()){
+    if(orphan.has(l.fromId)||orphan.has(l.toId)) await dbDel('liquidaciones',l.id);
+  }
+  await loadProjData();
+  render();
+  toast('Referencias de socios eliminados limpiadas');
+}
 function renderBalance(){
   const costos=App.costos;
   const socios=sociosOrdenados();
@@ -1565,6 +1678,7 @@ function renderBalance(){
   }
 
   let avisos='';
+  if(extraIds.size>0) avisos+=`<div class="part-banner warn" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap"><span>${icon('alert',15)} Hay ${extraIds.size} socio(s) eliminado(s) que todavía tienen montos asignados (aparecen como "(socio eliminado)").</span><button class="btn sm danger" onclick="limpiarSociosEliminados()">${icon('trash',14)} Limpiar referencias</button></div>`;
   if(sinDistribuir>0.5) avisos+=`<div class="part-banner warn">${icon('alert',15)} Hay ${fmt(sinDistribuir)} en costos sin cargo a socios (o con distribución incompleta). Asigna el cargo en cada costo para que el balance esté completo.</div>`;
   if(externoPagado>0.5) avisos+=`<div class="hint" style="margin-top:12px">${icon('info',14)} ${fmt(externoPagado)} fueron pagados por terceros/externos (no asociados a un socio) y no entran en el neto entre socios.</div>`;
 
@@ -2216,13 +2330,13 @@ function renderDocumentos(){
         const isVenc=d.fechaVencimiento && d.fechaVencimiento<hoy && d.estado!=='Aprobado';
         const porV=d.fechaVencimiento && !isVenc && daysBetween(hoy,d.fechaVencimiento)<=30 && d.estado!=='Aprobado';
         return `<tr>
-          <td>${esc(d.nombre)}${d.nota?` <span class="muted" title="${esc(d.nota)}" style="display:inline-block;vertical-align:-2px">${icon('info',13)}</span>`:''}</td>
+          <td>${esc(d.nombre)}${d.nota?` <span class="muted" title="${esc(d.nota)}" style="display:inline-block;vertical-align:-2px">${icon('info',13)}</span>`:''}${d.adjunto&&d.adjunto.data?` <span class="muted" title="Tiene archivo adjunto" style="display:inline-block;vertical-align:-2px">${icon('file',13)}</span>`:''}</td>
           <td>${esc(d.tipo)}</td><td class="muted">${esc(d.folio||'—')}</td>
           <td>${fmtDate(d.fechaEmision)}</td>
           <td style="color:${isVenc?'var(--red)':porV?'var(--amber)':''};white-space:nowrap">${fmtDate(d.fechaVencimiento)}${isVenc?' '+icon('alert',13):porV?' '+icon('clock',13):''}</td>
           <td class="muted">${esc(d.responsable||'—')}</td>
           <td>${badge(d.estado)}</td>
-          <td><div class="row-actions"><button class="btn sm" onclick="editDoc('${d.id}')">${icon('edit',14)}</button><button class="btn sm danger" onclick="delDoc('${d.id}')">${icon('trash',14)}</button></div></td>
+          <td><div class="row-actions">${d.adjunto&&d.adjunto.data?`<button class="btn sm" title="Ver archivo" onclick="verAdjunto('documentos','${d.id}')">${icon('file',14)}</button>`:''}<button class="btn sm" onclick="editDoc('${d.id}')">${icon('edit',14)}</button><button class="btn sm danger" onclick="delDoc('${d.id}')">${icon('trash',14)}</button></div></td>
         </tr>`;}).join(''):`<tr><td colspan="8" class="empty">No hay documentos registrados.</td></tr>`}</tbody>
     </table></div>`;
   document.getElementById('docFilter').onchange=e=>{_docFilter=e.target.value;renderDocumentos();};
@@ -2235,7 +2349,8 @@ function docFields(){return[
   {key:'fechaVencimiento',label:'Fecha de vencimiento',type:'date'},
   {key:'responsable',label:'Responsable'},
   {key:'estado',label:'Estado',type:'select',options:App.config.estadosDocumento,default:'Pendiente'},
-  {key:'nota',label:'Notas / ubicación del archivo',type:'textarea',placeholder:'Ej: Carpeta Drive / archivador físico'}
+  {key:'nota',label:'Notas / ubicación del archivo',type:'textarea',placeholder:'Ej: Carpeta Drive / archivador físico'},
+  {key:'adjunto',label:'Archivo adjunto (imagen o PDF)',type:'file'}
 ];}
 function addDoc(){ openModal('Nuevo Documento',docFields(),async d=>{
   const r={id:uid(),proyectoId:App.currentProj,...d}; await dbPut('documentos',r); App.documentos.push(r); closeModal(); renderDocumentos(); toast('Documento agregado');
@@ -2265,11 +2380,11 @@ function renderHitos(){
       <tbody>${rows.length?rows.map(h=>{
         const isVenc=h.estado!=='Completado'&&h.fecha&&h.fecha<hoy;
         return `<tr>
-          <td><strong>${esc(h.nombre)}</strong></td><td>${esc(h.categoria)}</td>
+          <td><strong>${esc(h.nombre)}</strong>${h.adjunto&&h.adjunto.data?` <span class="muted" title="Tiene archivo adjunto" style="display:inline-block;vertical-align:-2px">${icon('file',13)}</span>`:''}</td><td>${esc(h.categoria)}</td>
           <td style="color:${isVenc?'var(--red)':''};white-space:nowrap">${fmtDate(h.fecha)}${isVenc?' '+icon('alert',13):''}</td>
           <td>${fmtDate(h.fechaReal)}</td><td class="muted">${esc(h.responsable||'—')}</td>
           <td>${badge(h.estado)}</td><td class="muted" style="white-space:normal;max-width:220px">${esc(h.nota||'')}</td>
-          <td><div class="row-actions"><button class="btn sm" onclick="editHito('${h.id}')">${icon('edit',14)}</button><button class="btn sm danger" onclick="delHito('${h.id}')">${icon('trash',14)}</button></div></td>
+          <td><div class="row-actions">${h.adjunto&&h.adjunto.data?`<button class="btn sm" title="Ver archivo" onclick="verAdjunto('hitos','${h.id}')">${icon('file',14)}</button>`:''}<button class="btn sm" onclick="editHito('${h.id}')">${icon('edit',14)}</button><button class="btn sm danger" onclick="delHito('${h.id}')">${icon('trash',14)}</button></div></td>
         </tr>`;}).join(''):`<tr><td colspan="8" class="empty">No hay hitos legales registrados.</td></tr>`}</tbody>
     </table></div>`;
 }
@@ -2280,7 +2395,8 @@ function hitoFields(){return[
   {key:'fechaReal',label:'Fecha real de cumplimiento',type:'date'},
   {key:'responsable',label:'Responsable',placeholder:'Ej: Arquitecto, Abogado'},
   {key:'estado',label:'Estado',type:'select',options:['No iniciado','En proceso','Completado'],default:'No iniciado'},
-  {key:'nota',label:'Notas',type:'textarea'}
+  {key:'nota',label:'Notas',type:'textarea'},
+  {key:'adjunto',label:'Archivo adjunto (imagen o PDF)',type:'file'}
 ];}
 function addHito(){ openModal('Nuevo Hito Legal',hitoFields(),async d=>{
   const r={id:uid(),proyectoId:App.currentProj,...d}; await dbPut('hitos',r); App.hitos.push(r); closeModal(); renderHitos(); toast('Hito agregado');
