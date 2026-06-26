@@ -277,23 +277,38 @@ tfoot td{font-weight:700;background:var(--panel2)}
   .subtabs{overflow-x:auto;-webkit-overflow-scrolling:touch}
   .subtab{white-space:nowrap}
 
-  /* ----- Tablas convertidas en tarjetas ----- */
+  /* ----- Tablas como tarjetas compactas, se expanden al tocar ----- */
   .table-wrap{border:none;overflow:visible;background:transparent;border-radius:0}
   .table-wrap table,.table-wrap tbody,.table-wrap tfoot,.table-wrap tr,.table-wrap td{display:block;width:100%}
   .table-wrap thead{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
-  .table-wrap tbody tr{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:4px 15px;margin-bottom:11px;box-shadow:var(--shadow)}
+  .table-wrap tbody tr{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 15px;margin-bottom:10px;box-shadow:var(--shadow)}
+  .table-wrap tbody tr.m-exp{cursor:pointer;padding-right:40px}
   .table-wrap tbody tr:hover{background:var(--panel)}
-  .table-wrap td{border:none;border-bottom:1px solid #f1f5f9;white-space:normal;padding:9px 0;text-align:left;min-height:0}
-  .table-wrap tbody tr td:last-child{border-bottom:none}
-  .table-wrap td.num{text-align:left;font-size:14px;font-weight:600}
-  .table-wrap td[data-label]::before{content:attr(data-label);display:block;font-weight:700;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.4px;margin-bottom:3px}
-  .table-wrap td:not([data-label]) .row-actions{justify-content:flex-start;padding-top:2px}
-  .table-wrap td[colspan]{text-align:center}
-  .table-wrap td.empty{padding:26px 0;border:none}
+  /* por defecto se ocultan las celdas: solo se ve el título y un dato resumen */
+  .table-wrap tbody td{display:none;border:none;padding:0;white-space:normal;text-align:left}
+  .table-wrap tbody td.m-head{display:block;font-weight:700;font-size:15px;color:var(--text);line-height:1.3}
+  .table-wrap tbody td.m-head::before{display:none}
+  .table-wrap tbody td.m-sum{display:block;margin-top:7px}
+  .table-wrap tbody td.num{font-variant-numeric:tabular-nums;font-weight:600}
+  .table-wrap td[data-label]::before{content:attr(data-label);display:block;font-weight:700;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.4px;margin-bottom:2px}
+  /* expandido: aparece el resto de la información */
+  .table-wrap tbody tr.m-open td.m-detail,.table-wrap tbody tr.m-open td.m-actions{display:block}
+  .table-wrap tbody tr.m-open td{padding:9px 0;border-bottom:1px solid #f1f5f9}
+  .table-wrap tbody tr.m-open td.m-head{padding:0 0 9px}
+  .table-wrap tbody tr.m-open td.m-sum{margin-top:0}
+  .table-wrap tbody tr.m-open td:last-child{border-bottom:none;padding-bottom:0}
+  .table-wrap tbody td.m-actions .row-actions{justify-content:flex-start;gap:8px;margin-top:2px}
   .table-wrap .prog{min-width:0}
-  /* Totales (tfoot) como tarjeta destacada */
-  .table-wrap tfoot tr{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:4px 15px;margin-bottom:11px}
-  .table-wrap tfoot td{border:none;border-bottom:1px solid #e2e8f0;padding:9px 0;text-align:left}
+  /* chevron indicador de "tocar para ver más" */
+  .table-wrap tbody tr.m-exp::after{content:'';position:absolute;right:16px;top:16px;width:8px;height:8px;border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);transform:rotate(45deg);transition:transform .18s}
+  .table-wrap tbody tr.m-exp.m-open::after{transform:rotate(-135deg);top:20px}
+  /* filas vacías o de una sola celda: planas, no interactivas */
+  .table-wrap tbody tr.m-plain{padding:22px 15px;cursor:default}
+  .table-wrap tbody tr.m-plain::after{display:none}
+  .table-wrap tbody tr.m-plain td{display:block;text-align:center;color:var(--muted)}
+  /* totales (tfoot) como tarjeta destacada, siempre visible */
+  .table-wrap tfoot tr{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:6px 15px;margin-bottom:10px}
+  .table-wrap tfoot td{display:block;border:none;border-bottom:1px solid #e2e8f0;padding:9px 0;text-align:left}
   .table-wrap tfoot td:last-child{border-bottom:none}
 }
 .toast{position:fixed;bottom:20px;right:20px;background:var(--green);color:#fff;padding:12px 18px;border-radius:10px;box-shadow:var(--shadow);z-index:100;opacity:0;transform:translateY(10px);transition:.25s;font-weight:600}
@@ -976,31 +991,67 @@ function render(){
   else if(v==='config') renderConfig();
 }
 
-/* ====================== VISTA MÓVIL: tablas como tarjetas ====================== */
-/* Copia el encabezado de cada columna a la celda (data-label) para que en pantallas
-   chicas se vea "Etiqueta: valor". Funciona en todas las tablas sin tocar cada vista. */
+/* ====================== VISTA MÓVIL: tablas como tarjetas compactas ====================== */
+/* En el celular cada fila se vuelve una tarjeta que muestra solo el título y un dato
+   resumen; al tocarla se despliega el resto. Esto se aplica solo, sin tocar cada vista:
+   - data-label: copia el encabezado de cada columna a la celda ("Etiqueta: valor").
+   - m-head: primera celda (título de la tarjeta).
+   - m-sum: dato resumen visible cuando está colapsada (estado/última cifra).
+   - m-detail / m-actions: ocultos hasta que se toca la tarjeta.
+   - m-plain: filas de una sola celda (estado vacío) que no se colapsan. */
 function aplicarEtiquetasMoviles(){
   document.querySelectorAll('.table-wrap table').forEach(tb=>{
     const ths=[...tb.querySelectorAll('thead th')].map(th=>th.textContent.trim());
-    if(!ths.length) return;
     tb.querySelectorAll('tbody > tr').forEach(tr=>{
-      [...tr.children].forEach((td,i)=>{
-        if(td.hasAttribute('colspan')||td.classList.contains('empty')){ td.removeAttribute('data-label'); return; }
-        const lbl=ths[i]||'';
-        if(lbl) td.setAttribute('data-label',lbl); else td.removeAttribute('data-label');
+      const cells=[...tr.children];
+      // Fila de una sola celda (estado vacío / mensaje): se deja plana.
+      if(cells.length<=1 || (cells[0]&&(cells[0].hasAttribute('colspan')||cells[0].classList.contains('empty')))){
+        tr.classList.add('m-plain'); tr.classList.remove('m-exp','m-open');
+        cells.forEach(td=>{ td.classList.remove('m-head','m-sum','m-detail','m-actions'); td.removeAttribute('data-label'); });
+        return;
+      }
+      tr.classList.remove('m-plain');
+      // Etiquetas y limpieza de roles previos.
+      cells.forEach((td,i)=>{
+        td.classList.remove('m-head','m-sum','m-detail','m-actions');
+        if(ths.length && ths[i] && !td.hasAttribute('colspan')) td.setAttribute('data-label',ths[i]); else td.removeAttribute('data-label');
       });
+      // Celda de acciones (la que tiene botones) y celda resumen (estado o último valor).
+      const actionCell=cells.find(td=>td.querySelector && td.querySelector('.row-actions'));
+      let sumCell=cells.find(td=>td!==cells[0] && td.querySelector && td.querySelector('.badge'));
+      if(!sumCell){ for(let i=cells.length-1;i>=1;i--){ if(cells[i]!==actionCell){ sumCell=cells[i]; break; } } }
+      cells[0].classList.add('m-head'); cells[0].removeAttribute('data-label');
+      cells.forEach(td=>{
+        if(td===cells[0]) return;
+        if(td===actionCell) td.classList.add('m-actions');
+        else if(td===sumCell) td.classList.add('m-sum');
+        else td.classList.add('m-detail');
+      });
+      // ¿Hay algo oculto que valga la pena desplegar? Solo entonces es expandible.
+      const hayOcultas=cells.some(td=>td.classList.contains('m-detail')||td.classList.contains('m-actions'));
+      tr.classList.toggle('m-exp',hayOcultas);
+      if(!hayOcultas) tr.classList.remove('m-open');
     });
   });
 }
-/* Observa cambios en el contenido (cualquier render o modal) y reaplica las etiquetas. */
+/* Toque sobre una tarjeta: la expande/colapsa. Ignora botones, enlaces y campos. */
+function _toggleTarjetaMovil(e){
+  if(!window.matchMedia||!window.matchMedia('(max-width:640px)').matches) return;
+  const tr=e.target.closest && e.target.closest('.table-wrap tbody tr.m-exp');
+  if(!tr) return;
+  if(e.target.closest('button,a,input,select,textarea,label,.row-actions')) return;
+  tr.classList.toggle('m-open');
+}
+/* Observa cambios en el contenido (cualquier render o modal) y reaplica el formato. */
 (function(){
   function setup(){
     try{
+      document.addEventListener('click',_toggleTarjetaMovil,true);
       let queued=false;
       const obs=new MutationObserver(()=>{ if(queued)return; queued=true; requestAnimationFrame(()=>{ queued=false; aplicarEtiquetasMoviles(); }); });
       obs.observe(document.body,{childList:true,subtree:true});
       aplicarEtiquetasMoviles();
-    }catch(e){ console.error('etiquetas móviles',e); }
+    }catch(e){ console.error('tarjetas móviles',e); }
   }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',setup); else setup();
 })();
